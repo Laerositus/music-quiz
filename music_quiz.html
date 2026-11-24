@@ -1202,6 +1202,41 @@
     </div>
   </div>
 
+  <div class="modal-overlay" id="correctionModal">
+    <div class="modal-box" style="position:relative;">
+      <button class="modal-close-x" onclick="closeCorrectionModal()">✕</button>
+      <div class="modal-title">🚩 Fix Incorrect Answer</div>
+      <div class="modal-subtitle" id="correctionModalSummary">What's the actual song?</div>
+      <form onsubmit="submitCorrection(event)">
+        <div class="modal-field">
+          <label>Correct title (optional)</label>
+          <input type="text" id="correctionTitleInput" autocomplete="off" />
+        </div>
+        <div class="modal-field">
+          <label>Correct artist (optional)</label>
+          <input type="text" id="correctionArtistInput" autocomplete="off" />
+        </div>
+        <div class="modal-field">
+          <label>Spotify link (optional)</label>
+          <input type="text" id="correctionSpotifyInput" autocomplete="off" placeholder="https://open.spotify.com/track/..." />
+        </div>
+        <div class="modal-field">
+          <label>Apple Music link (optional)</label>
+          <input type="text" id="correctionAppleInput" autocomplete="off" placeholder="https://music.apple.com/..." />
+        </div>
+        <div class="modal-field">
+          <label>Note (optional)</label>
+          <input type="text" id="correctionNoteInput" autocomplete="off" placeholder="Anything else worth knowing" />
+        </div>
+        <div class="modal-hint">Saved to 📚 My Library — doesn't change this round, just records the fix for later.</div>
+        <div class="modal-actions">
+          <button type="button" class="modal-btn secondary" onclick="closeCorrectionModal()">Cancel</button>
+          <button type="submit" class="modal-btn primary">Save correction</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <script>
     const RAW_SONG_LIST = [
       // BLØF full collection
@@ -1674,6 +1709,7 @@
     const PREVIEW_OVERRIDES_KEY = "song_guesser_preview_overrides_v1";
     const SONG_FLAGS_KEY = "song_guesser_song_flags_v1";
     const NO_PREVIEW_KEY = "song_guesser_no_preview_v1";
+    const SONG_CORRECTIONS_KEY = "song_guesser_corrections_v1";
     const SPOTIFY_CLIENT_ID_KEY = "song_guesser_spotify_client_id_v1";
     const SPOTIFY_CLIENT_SECRET_KEY = "song_guesser_spotify_client_secret_v1";
     const SPOTIFY_AUTH_MODE_KEY = "song_guesser_spotify_auth_mode_v1"; // "login" | "credentials"
@@ -1708,12 +1744,18 @@
     let previewOverrides = JSON.parse(localStorage.getItem(PREVIEW_OVERRIDES_KEY) || "{}");
     let songFlags = JSON.parse(localStorage.getItem(SONG_FLAGS_KEY) || "[]");
     let noPreviewSongIds = new Set(JSON.parse(localStorage.getItem(NO_PREVIEW_KEY) || "[]"));
+    // Suggested fixes for "incorrect answer" flags: keyed by song.id, each holding the
+    // corrected title/artist and/or a Spotify/Apple Music link pointing at the actual track.
+    // Purely informational — never overwrites the song's own data — so it can be reviewed
+    // later (via the 📚 My Library export) and applied to the real quiz data by hand.
+    let songCorrections = JSON.parse(localStorage.getItem(SONG_CORRECTIONS_KEY) || "{}");
     let LIBRARY = [];
     let CATEGORIES = {};
     let pendingCsvImport = null;
     let previewPickerSong = null;
     let previewCandidates = [];
     let previewAuditionIndex = null;
+    let correctionModalSong = null;
     const previewAudition = new Audio();
 
     // ---------- Spotify API (two selectable auth modes) ----------
@@ -1754,6 +1796,7 @@
     function savePreviewOverrides() { localStorage.setItem(PREVIEW_OVERRIDES_KEY, JSON.stringify(previewOverrides)); }
     function saveSongFlags() { localStorage.setItem(SONG_FLAGS_KEY, JSON.stringify(songFlags)); }
     function saveNoPreviewSongIds() { localStorage.setItem(NO_PREVIEW_KEY, JSON.stringify(Array.from(noPreviewSongIds))); }
+    function saveSongCorrections() { localStorage.setItem(SONG_CORRECTIONS_KEY, JSON.stringify(songCorrections)); }
     function saveSpotifyAuthMode(mode) {
       spotifyAuthMode = mode;
       localStorage.setItem(SPOTIFY_AUTH_MODE_KEY, mode);
@@ -3138,8 +3181,79 @@
       if (!currentTargetSong) return;
       const song = currentTargetSong;
       logSongFlag(song, "incorrect_answer", "Reported wrong answer/song metadata");
-      showStatus(`🚩 Flagged "${song.title}" by ${song.artist} as an incorrect answer — saved to 📚 My Library.`, "info", false);
-      setTimeout(hideStatus, 2400);
+      openCorrectionModal(song);
+    }
+
+    // ---------- Correction modal (fix a flagged answer) ----------
+    // Lets you note what the song actually is — a corrected title/artist, and/or a Spotify or
+    // Apple Music link pointing at the real track — without touching the round in progress.
+    // Saved to songCorrections (localStorage) and surfaced in 📚 My Library / the JSON export
+    // so the actual quiz data can be fixed later.
+    function openCorrectionModalForSong(songId) {
+      const song = LIBRARY.find(s => s.id === songId);
+      if (song) openCorrectionModal(song);
+    }
+
+    function openCorrectionModal(song) {
+      correctionModalSong = song;
+      const existing = songCorrections[song.id];
+      document.getElementById("correctionModalSummary").textContent =
+        `This round's answer was "${song.title}" by ${song.artist}. What's the actual song?`;
+      document.getElementById("correctionTitleInput").value = existing?.correctedTitle || "";
+      document.getElementById("correctionArtistInput").value = existing?.correctedArtist || "";
+      document.getElementById("correctionSpotifyInput").value = existing?.spotifyUrl || "";
+      document.getElementById("correctionAppleInput").value = existing?.appleMusicUrl || "";
+      document.getElementById("correctionNoteInput").value = existing?.note || "";
+      document.getElementById("correctionModal").classList.add("show");
+    }
+
+    function closeCorrectionModal() {
+      document.getElementById("correctionModal").classList.remove("show");
+      correctionModalSong = null;
+    }
+
+    function submitCorrection(event) {
+      event.preventDefault();
+      const song = correctionModalSong;
+      if (!song) return;
+
+      const correctedTitle = document.getElementById("correctionTitleInput").value.trim();
+      const correctedArtist = document.getElementById("correctionArtistInput").value.trim();
+      const spotifyUrl = document.getElementById("correctionSpotifyInput").value.trim();
+      const appleMusicUrl = document.getElementById("correctionAppleInput").value.trim();
+      const note = document.getElementById("correctionNoteInput").value.trim();
+
+      if (!correctedTitle && !correctedArtist && !spotifyUrl && !appleMusicUrl) {
+        showStatus("Add a corrected title/artist and/or a Spotify or Apple Music link first.", "wrong", false);
+        setTimeout(hideStatus, 2400);
+        return;
+      }
+
+      const correction = {
+        songId: song.id,
+        originalTitle: song.title,
+        originalArtist: song.artist,
+        correctedTitle: correctedTitle || null,
+        correctedArtist: correctedArtist || null,
+        spotifyUrl: spotifyUrl || null,
+        appleMusicUrl: appleMusicUrl || null,
+        note: note || null,
+        createdAt: Date.now()
+      };
+      songCorrections[song.id] = correction;
+      saveSongCorrections();
+      resolveFlagsForSong(song.id, "incorrect_answer", correction);
+
+      closeCorrectionModal();
+      showStatus(`🚩 Saved your correction for "${song.title}" — see 📚 My Library to review or export it.`, "info", false);
+      setTimeout(hideStatus, 2600);
+      if (document.getElementById("libraryModal").classList.contains("show")) renderLibraryModalContent();
+    }
+
+    function removeSongCorrection(songId) {
+      delete songCorrections[songId];
+      saveSongCorrections();
+      renderLibraryModalContent();
     }
 
     // ---------- Preview picker (fix a flagged preview) ----------
@@ -3298,7 +3412,8 @@
         appleMusicUrl: getAppleMusicLink(s),
         previewOverridden: !!s.previewOverridden,
         noPreviewAvailable: noPreviewSongIds.has(s.id),
-        flags: flagsBySong[s.id] || []
+        flags: flagsBySong[s.id] || [],
+        suggestedCorrection: songCorrections[s.id] || null
       }));
     }
 
@@ -3369,14 +3484,30 @@
 
       html += `<div class="library-section-title">🚩 Flagged Songs (${songFlags.length})</div>`;
       html += songFlags.length
-        ? songFlags.slice().sort((a, b) => b.createdAt - a.createdAt).map(f => `
+        ? songFlags.slice().sort((a, b) => b.createdAt - a.createdAt).map(f => {
+            const correction = f.type === "incorrect_answer" ? songCorrections[f.songId] : null;
+            let correctionLine = "";
+            if (correction) {
+              const bits = [];
+              if (correction.correctedTitle || correction.correctedArtist) {
+                bits.push(`✅ ${correction.correctedTitle || "?"} — ${correction.correctedArtist || "?"}`);
+              }
+              if (correction.spotifyUrl) bits.push(`<a href="${correction.spotifyUrl}" target="_blank" rel="noopener noreferrer">Spotify ↗</a>`);
+              if (correction.appleMusicUrl) bits.push(`<a href="${correction.appleMusicUrl}" target="_blank" rel="noopener noreferrer">Apple Music ↗</a>`);
+              correctionLine = `<div class="lr-sub">${bits.join(" · ")}</div>`;
+            }
+            const song = LIBRARY.find(s => s.id === f.songId);
+            return `
           <div class="library-row">
             <div style="min-width:0;">
               <div class="lr-name">${f.title} <span style="color:var(--text-muted); font-weight:400;">— ${f.artist}</span></div>
               <div class="lr-sub">${f.type === "incorrect_song" ? "🎵 Wrong preview" : "❓ Wrong answer"} · ${new Date(f.createdAt).toLocaleDateString()}${f.resolved ? " · ✓ resolved" : ""}</div>
+              ${correctionLine}
             </div>
+            ${f.type === "incorrect_answer" && song ? `<button onclick="openCorrectionModalForSong('${f.songId}')" title="${correction ? "Edit correction" : "Add correction"}">✏️</button>` : ""}
             <button onclick="removeSongFlag('${f.id}')" title="Dismiss">✕</button>
-          </div>`).join("") + `<button type="button" class="modal-btn secondary" style="width:100%; margin-top:4px;" onclick="clearAllFlags()">Clear all flags</button>`
+          </div>`;
+          }).join("") + `<button type="button" class="modal-btn secondary" style="width:100%; margin-top:4px;" onclick="clearAllFlags()">Clear all flags</button>`
         : `<div class="library-empty">No flags yet.</div>`;
 
       const noPreviewSongs = LIBRARY.filter(s => noPreviewSongIds.has(s.id));
